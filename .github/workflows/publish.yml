@@ -1,0 +1,53 @@
+name: Publish Rigeng Pages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rigeng-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RIGENG_SOURCE: ${{ vars.RIGENG_SOURCE }}
+      RIGENG_SNAPSHOT_TOKEN: ${{ secrets.RIGENG_SNAPSHOT_TOKEN }}
+    steps:
+      - name: Fetch public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RIGENG_SOURCE"
+          test -n "$RIGENG_SNAPSHOT_TOKEN"
+          printf 'Authorization: Bearer %s\n' "$RIGENG_SNAPSHOT_TOKEN" | curl --fail --silent --show-error --retry 2 --max-time 180 --header @- "$RIGENG_SOURCE/export/pages" --output pages.ndjson
+          python3 - <<'PY'
+          import json
+          from pathlib import Path, PurePosixPath
+          out = Path('_site')
+          out.mkdir()
+          with Path('pages.ndjson').open(encoding='utf-8') as stream:
+              for line in stream:
+                  record = json.loads(line)
+                  name = PurePosixPath(record['path'])
+                  if name.is_absolute() or '..' in name.parts or not name.parts:
+                      raise ValueError('Invalid site output path')
+                  file = out.joinpath(*name.parts)
+                  file.parent.mkdir(parents=True, exist_ok=True)
+                  with file.open('x', encoding='utf-8') as writer:
+                      writer.write(record['content'])
+          if not (out / 'index.html').exists() or not (out / '_rigeng/revision.json').exists():
+              raise ValueError('Incomplete public snapshot')
+          PY
+      - uses: actions/upload-pages-artifact@v4
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
